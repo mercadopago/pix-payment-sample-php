@@ -18,39 +18,63 @@ $app->get('/', function (Request $request, Response $response, $args) {
 
 // process pix payment
 $app->post('/process_payment', function (Request $request, Response $response, $args) {
-    $contents = json_decode(file_get_contents('php://input'), true);
-    $parsed_request = $request->withParsedBody($contents);
-    $parsed_body = $parsed_request->getParsedBody();
+    try {
+        $contents = json_decode(file_get_contents('php://input'), true);
+        $parsed_request = $request->withParsedBody($contents);
+        $parsed_body = $parsed_request->getParsedBody();
+    
+        $payment = new MercadoPago\Payment();
+        $payment->transaction_amount = $parsed_body["transactionAmount"];
+        $payment->description = $parsed_body["description"];
+        $payment->payment_method_id = "pix";
+        $payment->payer = array(
+            "email" => $parsed_body["payer"]["email"],
+            "first_name" => $parsed_body["payer"]["firstName"],
+            "last_name" => $parsed_body["payer"]["lastName"],
+            "identification" => array(
+                "type" => $parsed_body["payer"]["identification"]["type"],
+                "number" => $parsed_body["payer"]["identification"]["number"]
+            )
+        );
+    
+        $payment->save();
+    
+        validate_payment_result($payment);
 
-    $payment = new MercadoPago\Payment();
-    $payment->transaction_amount = $parsed_body["transactionAmount"];
-    $payment->description = $parsed_body["description"];
-    $payment->payment_method_id = "pix";
-    $payment->payer = array(
-        "email" => $parsed_body["payer"]["email"],
-        "first_name" => $parsed_body["payer"]["firstName"],
-        "last_name" => $parsed_body["payer"]["lastName"],
-        "identification" => array(
-            "type" => $parsed_body["payer"]["identification"]["type"],
-            "number" => $parsed_body["payer"]["identification"]["number"]
-        )
-    );
+        $response_fields = array(
+            'id' => $payment->id,
+            'status' => $payment->status,
+            'detail' => $payment->status_detail,
+            'qrCodeBase64' => $payment->point_of_interaction->transaction_data->qr_code_base64,
+            'qrCode' => $payment->point_of_interaction->transaction_data->qr_code
+        );
+    
+        $response_body = json_encode($response_fields);
+        $response->getBody()->write($response_body);
 
-    $payment->save();
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(201);
+    } catch(Exception $exception) {
+        $response_fields = array('error_message' => $exception->getMessage());
 
-    $response_fields = array(
-        'id' => $payment->id,
-        'status' => $payment->status,
-        'detail' => $payment->status_detail,
-        'qrCodeBase64' => $payment->point_of_interaction->transaction_data->qr_code_base64,
-        'qrCode' => $payment->point_of_interaction->transaction_data->qr_code
-    );
+        $response_body = json_encode($response_fields);
+        $response->getBody()->write($response_body);
 
-    $response_body = json_encode($response_fields);
-
-    $response->getBody()->write($response_body);
-    return $response->withHeader('Content-Type', 'application/json')->withStatus(201);
+        return $response->withHeader('Content-Type', 'application/json')->withStatus(400);
+    }
 });
+
+function validate_payment_result($payment) {
+    if($payment->id === null) {
+        $error_message = 'Unknown error cause';
+
+        if($payment->error !== null) {
+            $sdk_error_message = $payment->error->message;
+            $error_message = $sdk_error_message !== null ? $sdk_error_message : $error_message;
+        }
+
+        throw new Exception($error_message);
+    }   
+}
 
 // serve static files
 $app->get('/{filetype}/{filename}', function (Request $request, Response $response, $args) {
